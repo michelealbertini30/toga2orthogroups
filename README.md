@@ -1,7 +1,6 @@
 # toga2orthogroups
 
 Build gene orthogroups from [TOGA2](https://github.com/hillerlab/TOGA) pairwise orthology annotations.  
-Outputs a copy-number count table ready for downstream evolutionary analyses, including [CAFE5](https://github.com/hahnlab/CAFE5).
 
 ---
 
@@ -10,22 +9,6 @@ Outputs a copy-number count table ready for downstream evolutionary analyses, in
 TOGA2 produces pairwise orthology between a reference genome and each query species independently. This script integrates those pairwise mappings across all species into multi-species **orthogroups** (gene families), using a **Union-Find** graph algorithm.
 
 Optionally, orthogroups can be extended with [PANTHER](https://www.pantherdb.org/) family assignments to capture paralogs that TOGA does not link directly.
-
----
-
-## Algorithm
-
-1. **Reference gene set** — Load reference transcript coordinates from a BED file and filter out sex-chromosome genes (chrX, chrY) to avoid copy-number biases.
-
-2. **Per-species ortholog loading** — For each query species, read `loss_summary.tsv` to identify intact transcripts (status `I`, `FI`, `PI`; optionally `UL`) and `orthology_classification.tsv` to extract reference → query gene mappings.
-
-3. **Union-Find grouping** — All reference genes start as singleton components. Within each species, an inverted index (query gene → reference genes) is built. Any two reference genes that share a query ortholog are merged into the same component. This is repeated across all species on the same Union-Find, so transitive merges propagate automatically across species.
-
-4. **PANTHER merge (optional)** — If a PANTHER database is provided, additional union edges are added between reference genes in the same PANTHER protein family, capturing paralogs not linked by TOGA.
-
-5. **Output** — Connected components are extracted as orthogroups. Each family is named by its lexicographically smallest member ID (ENSG in TOGA mode, PTHR in PANTHER mode). A copy-number count table and a full membership map are written to disk.
-
-6. **Species QC** — Per-family z-scores of copy number are computed across species. Species with an anomalously high fraction of outlier families are flagged as potentially misassembled or mis-annotated.
 
 ---
 
@@ -99,23 +82,6 @@ example:
 |------|-------------|
 | `PANTHER.orthogroups.tsv` | Same format as above; family IDs are PANTHER IDs (e.g. `PTHR12371`) |
 | `PANTHER.ortho_map.tsv` | Full membership map with PANTHER family IDs |
-
----
-
-## Loss status filtering
-
-TOGA2 assigns each query transcript one of the following status codes:
-
-| Status | Meaning | Included by default |
-|--------|---------|-------------------|
-| `I` | Intact | Yes |
-| `FI` | Frameshift Intact | Yes |
-| `PI` | Partial Intact | Yes |
-| `UL` | Uncertain Loss | No (add `-ul` to include) |
-| `L` | Lost | No |
-| `M` | Missing | No |
-
-Use `-ul` to be more permissive and recover genes that TOGA could not confidently call as lost.
 
 ---
 
