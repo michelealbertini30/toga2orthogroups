@@ -6,9 +6,7 @@ Build gene orthogroups from [TOGA2](https://github.com/hillerlab/TOGA) pairwise 
 
 ## Overview
 
-TOGA2 produces pairwise orthology between a reference genome and each query species independently. This script integrates those pairwise mappings across all species into multi-species **orthogroups** (gene families), using a **Union-Find** graph algorithm.
-
-Optionally, orthogroups can be extended with [PANTHER](https://www.pantherdb.org/) family assignments to capture paralogs that TOGA does not link directly.
+toga2orthogroups constructs multi-species **orthogroups** (gene families) from TOGA2 pairwise orthology calls by modelling reference-to-query gene relationships as a graph and extracting connected components via a **Union-Find** algorithm. Each reference gene is registered as a node; whenever two reference genes share a query ortholog across any species, they are merged into the same component. Union-Find handles this incrementally through path compression and rank-balanced union operations, yielding an effectively linear time complexity per operation, making the approach scalable to genome-wide analyses across hundreds of species. Optionally, a gene family database such as [PANTHER](https://www.pantherdb.org/) can be provided to further consolidate orthogroups by adding family-level edges between reference genes prior to component extraction. The output is readily formatted for direct input into gene family evolution tools such as CAFE5.
 
 ---
 
