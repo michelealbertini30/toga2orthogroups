@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.toga2orthogroups import main  # noqa: E402
+from src.toga2orthogroups import main
 
 if __name__ == "__main__":
     main()

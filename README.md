@@ -48,11 +48,12 @@ optional:
   -v,      --verbose               print per-species processing stats
   -ul,     --include-ul            include UL (Uncertain Loss) transcripts
            --panther FILE          PANTHER database TSV (replaces TOGA-only run)
+           --one-to-one            write one2one.lst of reference genes with exactly
+                                   1 ortholog in every species; skips PANTHER and QC
 
 QC:
-  -z FLOAT,  --z-threshold FLOAT        z-score threshold for outlier detection  (default: 3.0)
-  -of FLOAT, --outlier-fraction FLOAT   max outlier family fraction for flagging  (default: 0.05)
-             --no-qc                    skip species QC diagnostics
+  -z FLOAT,  --z-threshold FLOAT   z-score threshold for outlier detection  (default: 3.0)
+             --no-qc               skip species QC diagnostics
 
 example:
   toga2orthogroups.py \
@@ -81,25 +82,39 @@ example:
 | `PANTHER.orthogroups.tsv` | Same format as above; family IDs are PANTHER IDs (e.g. `PTHR12371`) |
 | `PANTHER.ortho_map.tsv` | Full membership map with PANTHER family IDs |
 
+### One-to-one mode (`--one-to-one`)
+
+| File | Description |
+|------|-------------|
+| `one2one.lst` | Reference gene names (one per line) for families where every species has exactly 1 ortholog |
+
+This mode skips PANTHER merging, the count table, the membership map, and QC. It is useful for extracting a high-confidence set of strictly conserved single-copy orthologs.
+
 ---
 
 ## Species QC
 
-After building orthogroups, a diagnostic report is printed to stderr. For each gene family, per-species copy numbers are z-scored relative to the cross-species distribution. A species is flagged (`***`) if it is an outlier in more than 5% of all families (adjustable with `-of`), which is indicative of assembly fragmentation or annotation artefacts.
+After building orthogroups, a diagnostic report is printed to stderr. For each species, the mean number of reference genes per query gene (`Mean R/Q`) is computed from that species' orthology data alone, independently of any other species. A value of 1.0 means every query gene maps to exactly one reference gene; higher values indicate that query genes span multiple reference genes, causing those reference genes to be merged into the same family and inflating copy-number counts for all other species.
+
+A species is flagged (`***`) if its `Mean R/Q` z-score exceeds the threshold (default 3.0, one-sided), which is indicative of assembly fragmentation or annotation artefacts.
 
 ```
+=== Running toga2orthogroups ===
+...
 === Species QC Diagnostics ===
-  z-score threshold: 3.0
-  outlier family fraction threshold: 0.05
+  z-score threshold (one-sided): 3.0
+  mean refs/query across species: 1.0031
   one2one orthologs: 14203
   total families: 17511
 
-  Species                   Outliers   Fraction   Flag
-  ------------------------- -------- ---------- ------
-  HLmarVanc2                     975     0.0557    ***
+  Species                   Mean R/Q    Total       Z   Flag
+  ------------------------- --------- ------- ------- ------
+  HLmarVanc2                   1.0891    7200   4.231    ***
 
-  WARNING: 1 species flagged with high orthogroup variance:
-    - HLmarVanc2: 5.6% of families are outliers. Consider re-running without this species.
+  WARNING: 1 species flagged as potential orthogroup inflators:
+    - HLmarVanc2: mean 1.0891 ref genes per query gene (z=4.23). Consider re-running without this species.
+
+Time elapsed: 23.4s
 ```
 
 Use `--no-qc` to suppress this report entirely.
