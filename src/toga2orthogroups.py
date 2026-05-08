@@ -717,15 +717,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="include UL (Uncertain Loss) transcripts",
     )
     opt.add_argument(
+        "--one-to-one",
+        action="store_true",
+        help="only write list of one-to-one orthologs",
+    )
+    opt.add_argument(
         "--panther",
         metavar="FILE",
         default=None,
         help="panther database",
-    )
-    opt.add_argument(
-        "--one-to-one",
-        action="store_true",
-        help="write one2one.lst of reference genes with exactly 1 ortholog in every species; skips PANTHER and QC",
     )
 
     qc = app.add_argument_group("QC")
