@@ -47,9 +47,8 @@ optional:
   -f,      --force                 overwrite output files if they already exist
   -v,      --verbose               print per-species processing stats
   -ul,     --include-ul            include UL (Uncertain Loss) transcripts
+           --one-to-one            only write list of one-to-one orthologs
            --panther FILE          PANTHER database TSV (replaces TOGA-only run)
-           --one-to-one            write one2one.lst of reference genes with exactly
-                                   1 ortholog in every species; skips PANTHER and QC
 
 QC:
   -z FLOAT,  --z-threshold FLOAT   z-score threshold for outlier detection  (default: 3.0)
