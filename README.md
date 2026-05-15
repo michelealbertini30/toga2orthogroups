@@ -135,6 +135,8 @@ Time elapsed: 2.9s
 
 Use `--no-qc` to suppress this report entirely.
 
+Use `--verbose` to print per-species orthogroups statistics
+
 ---
 
 ## Use with CAFE5
@@ -145,7 +147,8 @@ The `orthogroups_matrix.tsv` output is directly compatible with [CAFE5](https://
 cafe5 -i orthogroups/orthogroups_matrix.tsv -t species.tree -o cafe_out
 ```
 
-It is recommended to run the species QC step first and exclude any flagged species from both the count table and the species tree before running CAFE5, as assembly artefacts can inflate apparent gene family expansions and produce spurious evolutionary rate estimates.
+>[!TIP]
+It is recommended to run the species QC step first and exclude any flagged species before running CAFE5, as assembly artefacts can inflate apparent gene family expansions and produce spurious evolutionary rate estimates.
 
 ---
 
