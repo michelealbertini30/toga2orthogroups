@@ -967,6 +967,9 @@ def run(
             family_to_refs[fid].append(rg)
 
         one2one_genes: list[str] = []
+        n_no_orthologs = 0
+        n_ref_expansion = 0
+        n_query_expansion = 0
         for fid, members in orthogroups.families.items():
             sp_counts: dict[str, int] = defaultdict(int)
             for m in members:
@@ -974,12 +977,29 @@ def run(
                     sp, _ = m.split("|", 1)
                     sp_counts[sp] += 1
             ref_members = family_to_refs.get(fid, [])
-            if (
-                members
-                and len(ref_members) == 1
-                and all(sp_counts.get(sp, 0) <= 1 for sp in species_list)
-            ):
-                one2one_genes.extend(ref_members)
+            if not members:
+                n_no_orthologs += len(ref_members)
+                continue
+            if len(ref_members) != 1:
+                n_ref_expansion += len(ref_members)
+                continue
+            if not all(sp_counts.get(sp, 0) <= 1 for sp in species_list):
+                n_query_expansion += 1
+                continue
+            one2one_genes.extend(ref_members)
+
+        log.info(
+            "One-to-one filter breakdown (total ref genes: %d):\n"
+            "  passed:                                      %d\n"
+            "  no orthologs in any species:                 %d\n"
+            "  ref-side expansion (family >1 ref gene):     %d\n"
+            "  query-side expansion (>=1 species with >1):  %d",
+            len(orthogroups.reference_genes),
+            len(one2one_genes),
+            n_no_orthologs,
+            n_ref_expansion,
+            n_query_expansion,
+        )
 
         one2one_genes.sort()
         with open(out_lst, "w") as fh:
