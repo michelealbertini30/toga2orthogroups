@@ -32,6 +32,16 @@ __github__ = "https://github.com/michelealbertini30"
 # Module-level logger
 log = logging.getLogger(__name__)
 
+# Some TOGA2 orthology_classification.tsv files contain very long fields.
+# Raise the csv field size limit to the largest value the platform allows.
+_csv_limit = sys.maxsize
+while True:
+    try:
+        csv.field_size_limit(_csv_limit)
+        break
+    except OverflowError:
+        _csv_limit //= 2
+
 # QC: FamZ
 _FAMILY_COUNT_Z = 3.0       # |z| threshold for flagging a species in a single family
 _MAX_ZERO_FRAC = 0.5        # skip families where >= this fraction of species have 0 copies
