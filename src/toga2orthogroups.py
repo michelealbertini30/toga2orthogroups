@@ -142,11 +142,10 @@ class UnionFind:
 
 @dataclass
 class ReferenceGeneSet:
-    """Autosomal reference genes and their transcripts.
+    """Reference genes and their transcripts, filtered by a user-supplied blacklist.
 
-    Built from the reference isoforms file after filtering out
-    transcripts on sex chromosomes (chrX, chrY). Only autosomal genes are
-    used downstream to avoid biases from copy-number differences on sex chroms.
+    Transcripts on blacklisted chromosomes/scaffolds are excluded before
+    building orthogroups to avoid copy-number biases.
     """
     genes: set[str]
     transcripts: set[str]
@@ -186,21 +185,38 @@ class Orthogroups:
 # Main Functions
 # ---------------------------------------------------------------------------
 
+def _parse_blacklist(value: str | None) -> set[str]:
+    """Return a set of chromosome/scaffold names to exclude.
+
+    Accepts either a comma-separated string (e.g. 'chrX,chrY') or a path to a
+    file with one name per line.
+    """
+    if not value:
+        return set()
+    p = Path(value)
+    if p.is_file():
+        return {ln.strip() for ln in p.read_text().splitlines() if ln.strip()}
+    return {name.strip() for name in value.split(",") if name.strip()}
+
+
 def load_reference_genes(
     isoforms_path: str | Path,
     transcripts_bed_path: str | Path,
+    blacklist: set[str] | None = None,
 ) -> ReferenceGeneSet:
-    """Load TOGA isoforms, filter to autosomal transcripts, return gene set.
+    """Load TOGA isoforms, filter out blacklisted chromosomes, return gene set.
 
     Parameters
     ----------
     isoforms_path : path to TOGA isoforms TSV (gene \\t transcript)
     transcripts_bed_path : path to transcript BED (chr in col1, name in col4)
+    blacklist : chromosome/scaffold names to exclude (default: none)
     """
-    # --- Collect autosomal transcript IDs from the BED file ---
-    autosomal_transcripts: set[str] = set()
-    sex_chroms = {"chrX", "chrY"}
-    n_excluded = 0  # counter for sex-chrom transcripts dropped
+    _blacklist = blacklist or set()
+
+    # --- Collect non-blacklisted transcript IDs from the BED file ---
+    kept_transcripts: set[str] = set()
+    n_excluded = 0
 
     with open(transcripts_bed_path) as fh:
         for line in fh:
@@ -208,17 +224,17 @@ def load_reference_genes(
                 continue
             parts = line.split("\t", 5)
             chrom, name = parts[0], parts[3]
-            if chrom in sex_chroms:
+            if chrom in _blacklist:
                 n_excluded += 1
             else:
-                autosomal_transcripts.add(name)
+                kept_transcripts.add(name)
 
     log.info(
-        "Transcripts BED: %d autosomal, %d chrX/Y excluded",
-        len(autosomal_transcripts), n_excluded,
+        "Transcripts BED: %d kept, %d excluded (%s)",
+        len(kept_transcripts), n_excluded, ", ".join(sorted(_blacklist)) or "none",
     )
 
-    # --- Read isoforms TSV, keep only entries with at least one autosomal transcript---
+    # --- Read isoforms TSV, keep only entries with at least one non-blacklisted transcript ---
     genes: set[str] = set()
     gene_to_tx: dict[str, list[str]] = defaultdict(list)
     n_iso_total = 0
@@ -232,19 +248,19 @@ def load_reference_genes(
                 continue
             n_iso_total += 1
             gene, transcript = row[0], row[1]
-            if transcript in autosomal_transcripts:
+            if transcript in kept_transcripts:
                 n_iso_kept += 1
                 genes.add(gene)
                 gene_to_tx[gene].append(transcript)
 
     log.info(
-        "TOGA isoforms: %d total, %d kept (autosomal), %d genes",
+        "TOGA isoforms: %d total, %d kept, %d genes",
         n_iso_total, n_iso_kept, len(genes),
     )
 
     return ReferenceGeneSet(
         genes=genes,
-        transcripts=autosomal_transcripts,
+        transcripts=kept_transcripts,
         gene_to_transcripts=dict(gene_to_tx),
     )
 
@@ -856,6 +872,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     opt.add_argument(
+        "-bl", "--blacklist",
+        metavar="LIST|FILE",
+        default=None,
+        help=(
+            "Chromosomes/scaffolds to exclude. Accepts a comma-separated list "
+            "(e.g. chrX,chrY) or a path to a file with one name per line."
+        ),
+    )
+    opt.add_argument(
         "--panther",
         metavar="FILE",
         default=None,
@@ -903,6 +928,7 @@ def run(
     out_dir: str,
     force: bool = False,
     include_ul: bool = False,
+    blacklist: str | None = None,
     panther: str | None = None,
     ortho_z: float = 3.0,
     fam_z: float = 3.0,
@@ -950,7 +976,7 @@ def run(
     log.info("Species: %d loaded", len(species_list))
 
     # --- Load reference gene set ---
-    ref_genes = load_reference_genes(isoforms, transcripts_bed)
+    ref_genes = load_reference_genes(isoforms, transcripts_bed, blacklist=_parse_blacklist(blacklist))
 
     # --- Build orthogroups ---
     if panther and not one_to_one and not any_to_one:
@@ -1041,6 +1067,7 @@ def main(argv: list[str] | None = None) -> None:
         out_dir=args.out_dir,
         force=args.force,
         include_ul=args.include_ul,
+        blacklist=args.blacklist,
         panther=args.panther,
         ortho_z=args.ortho_z,
         fam_z=args.fam_z,
