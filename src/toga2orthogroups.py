@@ -859,16 +859,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--one-to-one",
         action="store_true",
         help=(
-            "Write a one-to-one matrix: families with exactly one reference gene "
-            "and at most one query gene per species (one2zero allowed)"
+            "Write a one-to-one matrix: families where every species has at most "
+            "one query gene (reference-side expansions allowed; one2zeros excluded by default)"
         ),
     )
     mode_group.add_argument(
-        "--any-to-one",
+        "--single-gene",
         action="store_true",
         help=(
-            "Write an any-to-one matrix: families where every species has at most "
-            "one query gene (reference-side expansions allowed, one2zero allowed)"
+            "Write a per-reference-gene matrix bypassing Union-Find: "
+            "0=one2zero, 1=one2one/many2one, -=many2many. "
+            "Rows with fewer than 2 species equal to 1 are skipped."
+        ),
+    )
+    opt.add_argument(
+        "--allow-one-to-zero",
+        action="store_true",
+        help=(
+            "When used with --one-to-one, keep families where some species have "
+            "0 query genes (one2zeros included)"
         ),
     )
     opt.add_argument(
@@ -934,7 +943,8 @@ def run(
     fam_z: float = 3.0,
     no_qc: bool = False,
     one_to_one: bool = False,
-    any_to_one: bool = False,
+    allow_one_to_zero: bool = False,
+    single_gene: bool = False,
 ) -> None:
     """Core runner — called by both the argparse main() and the Click subcommand.
 
@@ -950,7 +960,7 @@ def run(
     # Create output directory if it doesn't exist.
     _out_dir.mkdir(parents=True, exist_ok=True)
 
-    if not one_to_one and not any_to_one:
+    if not one_to_one and not single_gene:
         out_tsv = _out_dir / "orthogroups_matrix.tsv"
         out_map = _out_dir / "orthogroups_map.tsv"
 
@@ -978,8 +988,47 @@ def run(
     # --- Load reference gene set ---
     ref_genes = load_reference_genes(isoforms, transcripts_bed, blacklist=_parse_blacklist(blacklist))
 
+    # --- Single-gene mode: per-reference-gene matrix, bypasses Union-Find ---
+    if single_gene:
+        out_matrix = _out_dir / "single_gene_matrix.tsv"
+        if not force and out_matrix.exists():
+            log.error("Output file already exists: %s\nUse -f / --force to overwrite.", out_matrix)
+            sys.exit(1)
+
+        # Collect raw per-(ref_gene, species) query-gene counts.
+        per_gene: dict[str, dict[str, int]] = {rg: {} for rg in ref_genes.genes}
+        for spe in species_list:
+            log.debug("Processing species: %s", spe)
+            sp_ortho = load_species_orthologs(spe, toga_dir, ref_genes.genes, include_ul=include_ul)
+            for rg, q_genes in sp_ortho.ref_to_query.items():
+                # q_gene strings may be comma-separated lists (many2many rows);
+                # split to count distinct individual query gene loci.
+                individual = {g for qg in q_genes for g in qg.split(",")}
+                per_gene[rg][spe] = len(individual)
+
+        header = ["Family ID"] + species_list
+        rows = []
+        for rg in sorted(per_gene):
+            sp_counts = per_gene[rg]
+            n_ones = sum(1 for sp in species_list if sp_counts.get(sp, 0) == 1)
+            if n_ones < 2:
+                continue
+            row: list = [rg]
+            for sp in species_list:
+                c = sp_counts.get(sp, 0)
+                row.append("1" if c == 1 else "-" if c > 1 else "0")
+            rows.append(row)
+
+        with open(out_matrix, "w", newline="") as fh:
+            writer = csv.writer(fh, delimiter="\t")
+            writer.writerow(header)
+            writer.writerows(rows)
+        log.info("Wrote single-gene matrix: %s (%d genes)", out_matrix, len(rows))
+        _log_elapsed(t0)
+        return
+
     # --- Build orthogroups ---
-    if panther and not one_to_one and not any_to_one:
+    if panther and not one_to_one:
         log.info("Running in PANTHER mode...")
         orthogroups = build_orthogroups(
             ref_genes, species_list, toga_dir,
@@ -993,18 +1042,12 @@ def run(
             include_ul=include_ul,
         )
 
-    # --- One-to-one / any-to-one mode: matrix output ---
-    if one_to_one or any_to_one:
-        mode = "one2one" if one_to_one else "any2one"
-        out_matrix = _out_dir / f"{mode}_matrix.tsv"
+    # --- One-to-one mode: matrix output ---
+    if one_to_one:
+        out_matrix = _out_dir / "one2one_matrix.tsv"
         if not force and out_matrix.exists():
             log.error("Output file already exists: %s\nUse -f / --force to overwrite.", out_matrix)
             sys.exit(1)
-
-        # Build family_id -> [ref_genes] from the inverse mapping.
-        family_to_refs: dict[str, list[str]] = defaultdict(list)
-        for rg, fid in orthogroups.ref_gene_to_family.items():
-            family_to_refs[fid].append(rg)
 
         header = ["Family ID"] + species_list
         rows = []
@@ -1019,12 +1062,12 @@ def run(
                     sp, _ = m.split("|", 1)
                     sp_counts[sp] += 1
 
-            # Both modes: reject families where any species has >1 copy.
+            # Reject families where any species has >1 copy.
             if not all(sp_counts.get(sp, 0) <= 1 for sp in species_list):
                 continue
 
-            # Strict one-to-one: family must contain exactly one reference gene.
-            if one_to_one and len(family_to_refs.get(fid, [])) != 1:
+            # By default exclude families where any species has 0 copies.
+            if not allow_one_to_zero and not all(sp_counts.get(sp, 0) >= 1 for sp in species_list):
                 continue
 
             rows.append([fid] + [sp_counts.get(sp, 0) for sp in species_list])
@@ -1033,7 +1076,7 @@ def run(
             writer = csv.writer(fh, delimiter="\t")
             writer.writerow(header)
             writer.writerows(rows)
-        log.info("Wrote %s matrix: %s (%d families)", mode, out_matrix, len(rows))
+        log.info("Wrote one2one matrix: %s (%d families)", out_matrix, len(rows))
         _log_elapsed(t0)
         return
 
@@ -1073,7 +1116,8 @@ def main(argv: list[str] | None = None) -> None:
         fam_z=args.fam_z,
         no_qc=args.no_qc,
         one_to_one=args.one_to_one,
-        any_to_one=args.any_to_one,
+        allow_one_to_zero=args.allow_one_to_zero,
+        single_gene=args.single_gene,
     )
 
 
