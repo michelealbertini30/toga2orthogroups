@@ -995,28 +995,27 @@ def run(
             log.error("Output file already exists: %s\nUse -f / --force to overwrite.", out_matrix)
             sys.exit(1)
 
-        # Collect raw per-(ref_gene, species) query-gene counts.
-        per_gene: dict[str, dict[str, int]] = {rg: {} for rg in ref_genes.genes}
+        # Collect raw per-(ref_gene, species) individual query gene sets.
+        per_gene: dict[str, dict[str, set[str]]] = {rg: {} for rg in ref_genes.genes}
         for spe in species_list:
             log.debug("Processing species: %s", spe)
             sp_ortho = load_species_orthologs(spe, toga_dir, ref_genes.genes, include_ul=include_ul)
             for rg, q_genes in sp_ortho.ref_to_query.items():
                 # q_gene strings may be comma-separated lists (many2many rows);
-                # split to count distinct individual query gene loci.
-                individual = {g for qg in q_genes for g in qg.split(",")}
-                per_gene[rg][spe] = len(individual)
+                # split to collect distinct individual query gene loci.
+                per_gene[rg][spe] = {g for qg in q_genes for g in qg.split(",")}
 
         header = ["Family ID"] + species_list
         rows = []
         for rg in sorted(per_gene):
-            sp_counts = per_gene[rg]
-            n_ones = sum(1 for sp in species_list if sp_counts.get(sp, 0) == 1)
+            sp_genes = per_gene[rg]
+            n_ones = sum(1 for sp in species_list if len(sp_genes.get(sp, set())) == 1)
             if n_ones < 2:
                 continue
             row: list = [rg]
             for sp in species_list:
-                c = sp_counts.get(sp, 0)
-                row.append("1" if c == 1 else "-" if c > 1 else "0")
+                genes = sp_genes.get(sp, set())
+                row.append(next(iter(genes)) if len(genes) == 1 else "-")
             rows.append(row)
 
         with open(out_matrix, "w", newline="") as fh:
