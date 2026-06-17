@@ -1005,7 +1005,7 @@ def run(
                 # split to collect distinct individual query gene loci.
                 per_gene[rg][spe] = {g for qg in q_genes for g in qg.split(",")}
 
-        header = ["Family ID"] + species_list
+        header = ["Ref_ID"] + species_list
         rows = []
         for rg in sorted(per_gene):
             sp_genes = per_gene[rg]
@@ -1048,7 +1048,7 @@ def run(
             log.error("Output file already exists: %s\nUse -f / --force to overwrite.", out_matrix)
             sys.exit(1)
 
-        header = ["Family ID"] + species_list
+        header = ["Ref_ID"] + species_list
         rows = []
         for fid in sorted(orthogroups.families):
             members = orthogroups.families[fid]
