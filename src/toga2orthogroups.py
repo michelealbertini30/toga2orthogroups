@@ -175,8 +175,6 @@ class Orthogroups:
     families: dict[str, set[str]]
     # Reference gene to family membership
     ref_gene_to_family: dict[str, str]
-    # Full set of autosomal reference genes
-    reference_genes: set[str]
     # ref_gene -> set of "species|query_gene" orthologs (family-level QC)
     ref_gene_orthologs: dict[str, set[str]] = field(default_factory=dict)
 
@@ -184,6 +182,23 @@ class Orthogroups:
 # ---------------------------------------------------------------------------
 # Main Functions
 # ---------------------------------------------------------------------------
+
+def _parse_species_list(value: str) -> list[str]:
+    """Return an ordered list of species names.
+
+    Accepts either a comma-separated string (e.g. 'human,mouse') or a path to a
+    file with one name per line (tab-separated lines use the first column only).
+    """
+    p = Path(value)
+    if p.is_file():
+        result = []
+        for line in p.read_text().splitlines():
+            sp = line.strip().split("\t")[0]
+            if sp:
+                result.append(sp)
+        return result
+    return [sp.strip() for sp in value.split(",") if sp.strip()]
+
 
 def _parse_blacklist(value: str | None) -> set[str]:
     """Return a set of chromosome/scaffold names to exclude.
@@ -407,9 +422,6 @@ def build_orthogroups(
     ref_gene_to_family: dict[str, str] = {}
 
     for _root, members in components.items():
-        if not members:
-            continue
-
         # Family ID: use PANTHER ID when available (PANTHER mode)
         if gene_to_panther:
             panther_ids = {gene_to_panther[m] for m in members if m in gene_to_panther}
@@ -436,7 +448,6 @@ def build_orthogroups(
     return Orthogroups(
         families=families,
         ref_gene_to_family=ref_gene_to_family,
-        reference_genes=ref_genes.genes,
         ref_gene_orthologs=dict(ref_gene_orthologs),
     )
 
@@ -816,8 +827,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     req.add_argument(
         "-s", "--species-list",
         required=True,
-        metavar="FILE",
-        help="Newline separated list of species",
+        metavar="LIST|FILE",
+        help="Comma-separated species names or path to a file with one name per line",
     )
     req.add_argument(
         "-b", "--transcripts-bed",
@@ -854,39 +865,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Include UL (Uncertain Loss) transcripts",
     )
-    mode_group = opt.add_mutually_exclusive_group()
-    mode_group.add_argument(
-        "--one-to-one",
-        action="store_true",
-        help=(
-            "Write a one-to-one matrix: families where every species has at most "
-            "one query gene (reference-side expansions allowed; one2zeros excluded by default)"
-        ),
-    )
-    mode_group.add_argument(
-        "--single-gene",
-        action="store_true",
-        help=(
-            "Write a per-reference-gene matrix bypassing Union-Find: "
-            "0=one2zero, 1=one2one/many2one, -=many2many. "
-            "Rows with fewer than 2 species equal to 1 are skipped."
-        ),
-    )
-    opt.add_argument(
-        "--allow-one-to-zero",
-        action="store_true",
-        help=(
-            "When used with --one-to-one, keep families where some species have "
-            "0 query genes (one2zeros included)"
-        ),
-    )
     opt.add_argument(
         "-bl", "--blacklist",
         metavar="LIST|FILE",
         default=None,
         help=(
-            "Chromosomes/scaffolds to exclude. Accepts a comma-separated list "
-            "(e.g. chrX,chrY) or a path to a file with one name per line."
+            "Comma-separated chr/scaffold names or path to a file with one name per line"
         ),
     )
     opt.add_argument(
@@ -894,6 +878,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="FILE",
         default=None,
         help="PANTHER database flat file; if provided, enables PANTHER-guided family merging",
+    )
+    opt.add_argument(
+        "--one-to-one",
+        action="store_true",
+        help="Per-reference gene matrix with query gene name if single-copy",
     )
 
     qc = app.add_argument_group("QC")
@@ -943,8 +932,6 @@ def run(
     fam_z: float = 3.0,
     no_qc: bool = False,
     one_to_one: bool = False,
-    allow_one_to_zero: bool = False,
-    single_gene: bool = False,
 ) -> None:
     """Core runner — called by both the argparse main() and the Click subcommand.
 
@@ -956,44 +943,37 @@ def run(
 
     # --- Resolve output directory and expected file paths ---
     _out_dir = Path(out_dir)
-
-    # Create output directory if it doesn't exist.
     _out_dir.mkdir(parents=True, exist_ok=True)
 
-    if not one_to_one and not single_gene:
-        out_tsv = _out_dir / "orthogroups_matrix.tsv"
-        out_map = _out_dir / "orthogroups_map.tsv"
+    out_matrix = _out_dir / "one2one_matrix.tsv"
+    out_tsv    = _out_dir / "orthogroups_matrix.tsv"
+    out_map    = _out_dir / "orthogroups_map.tsv"
 
-        # Check for existing output files unless --force is set.
-        if not force:
+    if not force:
+        if one_to_one:
+            if out_matrix.exists():
+                log.error("Output file already exists: %s\nUse -f / --force to overwrite.", out_matrix)
+                sys.exit(1)
+        else:
             existing = [f for f in (out_tsv, out_map) if f.exists()]
             if existing:
                 log.error(
-                    "Output file(s) already exist: %s\n"
-                    "Use -f / --force to overwrite.",
+                    "Output file(s) already exist: %s\nUse -f / --force to overwrite.",
                     ", ".join(str(f) for f in existing),
                 )
                 sys.exit(1)
 
     # --- Load species list ---
-    # One species name per line; tab-separated lines are also accepted
-    species_list: list[str] = []
-    with open(species_list_path) as fh:
-        for line in fh:
-            sp = line.strip().split("\t")[0]
-            if sp:
-                species_list.append(sp)
+    species_list = _parse_species_list(species_list_path)
     log.info("Species: %d loaded", len(species_list))
 
     # --- Load reference gene set ---
     ref_genes = load_reference_genes(isoforms, transcripts_bed, blacklist=_parse_blacklist(blacklist))
 
-    # --- Single-gene mode: per-reference-gene matrix, bypasses Union-Find ---
-    if single_gene:
-        out_matrix = _out_dir / "single_gene_matrix.tsv"
-        if not force and out_matrix.exists():
-            log.error("Output file already exists: %s\nUse -f / --force to overwrite.", out_matrix)
-            sys.exit(1)
+    # --- One-to-one mode: per-reference-gene matrix, bypasses Union-Find ---
+    if one_to_one:
+        if panther:
+            log.warning("--panther is ignored in --one-to-one mode")
 
         # Collect raw per-(ref_gene, species) individual query gene sets.
         per_gene: dict[str, dict[str, set[str]]] = {rg: {} for rg in ref_genes.genes}
@@ -1022,12 +1002,12 @@ def run(
             writer = csv.writer(fh, delimiter="\t")
             writer.writerow(header)
             writer.writerows(rows)
-        log.info("Wrote single-gene matrix: %s (%d genes)", out_matrix, len(rows))
+        log.info("Wrote one2one matrix: %s (%d genes)", out_matrix, len(rows))
         _log_elapsed(t0)
         return
 
     # --- Build orthogroups ---
-    if panther and not one_to_one:
+    if panther:
         log.info("Running in PANTHER mode...")
         orthogroups = build_orthogroups(
             ref_genes, species_list, toga_dir,
@@ -1040,44 +1020,6 @@ def run(
             ref_genes, species_list, toga_dir,
             include_ul=include_ul,
         )
-
-    # --- One-to-one mode: matrix output ---
-    if one_to_one:
-        out_matrix = _out_dir / "one2one_matrix.tsv"
-        if not force and out_matrix.exists():
-            log.error("Output file already exists: %s\nUse -f / --force to overwrite.", out_matrix)
-            sys.exit(1)
-
-        header = ["Ref_ID"] + species_list
-        rows = []
-        for fid in sorted(orthogroups.families):
-            members = orthogroups.families[fid]
-            if not members:
-                continue
-
-            sp_counts: dict[str, int] = defaultdict(int)
-            for m in members:
-                if "|" in m:
-                    sp, _ = m.split("|", 1)
-                    sp_counts[sp] += 1
-
-            # Reject families where any species has >1 copy.
-            if not all(sp_counts.get(sp, 0) <= 1 for sp in species_list):
-                continue
-
-            # By default exclude families where any species has 0 copies.
-            if not allow_one_to_zero and not all(sp_counts.get(sp, 0) >= 1 for sp in species_list):
-                continue
-
-            rows.append([fid] + [sp_counts.get(sp, 0) for sp in species_list])
-
-        with open(out_matrix, "w", newline="") as fh:
-            writer = csv.writer(fh, delimiter="\t")
-            writer.writerow(header)
-            writer.writerows(rows)
-        log.info("Wrote one2one matrix: %s (%d families)", out_matrix, len(rows))
-        _log_elapsed(t0)
-        return
 
     header, rows = generate_count_table(orthogroups, species_list)
     write_count_table(header, rows, out_tsv)
@@ -1115,8 +1057,6 @@ def main(argv: list[str] | None = None) -> None:
         fam_z=args.fam_z,
         no_qc=args.no_qc,
         one_to_one=args.one_to_one,
-        allow_one_to_zero=args.allow_one_to_zero,
-        single_gene=args.single_gene,
     )
 
 
