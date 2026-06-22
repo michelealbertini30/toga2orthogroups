@@ -521,10 +521,10 @@ def generate_count_table(
     """Build the copy-number count table.
 
     CAFE5 expects a tab-separated file where:
-      - Header: [Family ID, species1, species2, ...]
-      - Rows: Family ID and copy number of that gene family in each species.
+      - Header: [Desc, Family ID, species1, species2, ...]
+      - Rows: NA, Family ID, and copy number of that gene family in each species.
     """
-    header = ["Family ID"] + species_list
+    header = ["Desc", "Family ID"] + species_list
     rows = []
 
     # Iterate over families in sorted order so the output is deterministic
@@ -539,9 +539,19 @@ def generate_count_table(
                 if sp in counts:
                     counts[sp] += 1
 
-        rows.append([family_id] + [counts[sp] for sp in species_list])
+        rows.append(["NA", family_id] + [counts[sp] for sp in species_list])
 
     return header, rows
+
+
+def apply_size_filter(rows: list[list], threshold: int) -> tuple[list[list], int]:
+    """Drop families where any species has >= threshold gene copies.
+
+    Row format expected: [Desc, family_id, count1, count2, ...]
+    Returns (filtered_rows, n_removed).
+    """
+    filtered = [row for row in rows if all(c < threshold for c in row[2:])]
+    return filtered, len(rows) - len(filtered)
 
 
 def write_count_table(
@@ -874,6 +884,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     opt.add_argument(
+        "-sf", "--size-filter",
+        type=int,
+        metavar="INT",
+        default=None,
+        help="Remove gene families where any species has >= INT gene copies",
+    )
+    opt.add_argument(
         "--panther",
         metavar="FILE",
         default=None,
@@ -932,6 +949,7 @@ def run(
     fam_z: float = 3.0,
     no_qc: bool = False,
     one_to_one: bool = False,
+    size_filter: int | None = None,
 ) -> None:
     """Core runner — called by both the argparse main() and the Click subcommand.
 
@@ -1022,6 +1040,11 @@ def run(
         )
 
     header, rows = generate_count_table(orthogroups, species_list)
+
+    if size_filter is not None:
+        rows, n_removed = apply_size_filter(rows, size_filter)
+        log.info("Size filter (threshold=%d): %d families removed, %d kept", size_filter, n_removed, len(rows))
+
     write_count_table(header, rows, out_tsv)
     write_orthogroup_membership(orthogroups, out_map)
 
@@ -1057,6 +1080,7 @@ def main(argv: list[str] | None = None) -> None:
         fam_z=args.fam_z,
         no_qc=args.no_qc,
         one_to_one=args.one_to_one,
+        size_filter=args.size_filter,
     )
 
 
