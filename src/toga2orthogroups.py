@@ -876,19 +876,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Include UL (Uncertain Loss) transcripts",
     )
     opt.add_argument(
+        "-sf", "--size-filter",
+        type=int,
+        metavar="INT",
+        default=None,
+        help="Remove gene families where any species has >= INT gene copies",
+    )
+    opt.add_argument(
         "-bl", "--blacklist",
         metavar="LIST|FILE",
         default=None,
         help=(
             "Comma-separated chr/scaffold names or path to a file with one name per line"
         ),
-    )
-    opt.add_argument(
-        "-sf", "--size-filter",
-        type=int,
-        metavar="INT",
-        default=None,
-        help="Remove gene families where any species has >= INT gene copies",
     )
     opt.add_argument(
         "--panther",
@@ -992,6 +992,8 @@ def run(
     if one_to_one:
         if panther:
             log.warning("--panther is ignored in --one-to-one mode")
+        if size_filter is not None:
+            log.warning("--size-filter is ignored in --one-to-one mode")
 
         # Collect raw per-(ref_gene, species) individual query gene sets.
         per_gene: dict[str, dict[str, set[str]]] = {rg: {} for rg in ref_genes.genes}
@@ -1044,6 +1046,8 @@ def run(
     if size_filter is not None:
         rows, n_removed = apply_size_filter(rows, size_filter)
         log.info("Size filter (threshold=%d): %d families removed, %d kept", size_filter, n_removed, len(rows))
+        kept_ids = {row[1] for row in rows}
+        orthogroups.families = {fid: m for fid, m in orthogroups.families.items() if fid in kept_ids}
 
     write_count_table(header, rows, out_tsv)
     write_orthogroup_membership(orthogroups, out_map)
