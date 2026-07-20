@@ -257,7 +257,6 @@ def load_reference_genes(
 
     with open(isoforms_path) as fh:
         reader = csv.reader(fh, delimiter="\t")
-        next(reader, None)
         for row in reader:
             if len(row) < 2:
                 continue
@@ -486,7 +485,6 @@ def _load_panther_families(
 
     with open(isoforms_path) as fh:
         reader = csv.reader(fh, delimiter="\t")
-        next(reader, None)
         for row in reader:
             if len(row) < 2:
                 continue
