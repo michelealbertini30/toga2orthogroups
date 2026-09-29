@@ -1,0 +1,25 @@
+[project]
+name = "toga2orthogroups"
+version = "0.1.0"
+description = "Build gene orthogroups from TOGA2 pairwise orthology annotations"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+    { name = "Michele Albertini", email = "michelealbertini30@gmail.com" },
+]
+
+# The orthogroup builder is standard-library only, by design.
+dependencies = []
+
+[dependency-groups]
+# Needed only by the `plot` subcommand (src/plot.py).
+plot = [
+    "networkx>=3.0",
+    "matplotlib>=3.7",
+]
+
+[tool.uv]
+# This repo is run as scripts (run_toga2_orthogroups.py), not installed as a
+# package, so uv manages only the environment and never builds the project.
+package = false

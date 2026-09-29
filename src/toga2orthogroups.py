@@ -822,6 +822,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "    -b toga2.transcripts.bed \\\n"
             "    -i toga2.isoforms.tsv \\\n"
             "    -o orthogroups \\\n"
+            "\n"
+            "subcommands:\n"
+            "  plot   Plot pairwise orthology relationships for one gene family\n"
+            "         (see: toga2orthogroups.py plot -h)\n"
         ),
     )
 
@@ -1061,6 +1065,18 @@ def run(
 
 
 def main(argv: list[str] | None = None) -> None:
+    argv = sys.argv[1:] if argv is None else list(argv)
+
+    # `plot` subcommand — delegates to the optional plotting module, which is
+    # the only part of the tool that needs third-party packages.
+    if argv and argv[0] == "plot":
+        try:
+            from src.plot import main as plot_main
+        except ImportError:
+            from plot import main as plot_main
+        plot_main(argv[1:])
+        return
+
     args = parse_args(argv)
 
     # --- Configure logging ---

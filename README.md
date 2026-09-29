@@ -14,6 +14,23 @@ toga2orthogroups constructs multi-species **orthogroups** (gene families) from T
 
 - Python ≥ 3.9
 - No external dependencies — standard library only
+- Optional, for the `plot` subcommand only: `networkx`, `matplotlib`
+
+### Environment ([uv](https://docs.astral.sh/uv/))
+
+`pyproject.toml` and `uv.lock` pin the optional plotting dependencies; the
+builder itself needs nothing.
+
+```bash
+uv sync                 # environment for the orthogroup builder (no deps)
+uv sync --group plot    # ...plus networkx and matplotlib for `plot`
+
+uv run python run_toga2_orthogroups.py -t TOGA2 -s species.lst ...
+uv run python run_toga2_orthogroups.py plot -t TOGA2 -q mm39 -g LILRB1 -o fig.svg
+```
+
+Without uv, the builder runs on any Python ≥ 3.9 as-is, and plotting needs
+`pip install networkx matplotlib`.
 
 ---
 
@@ -112,6 +129,114 @@ ENSG00000256188  ENSG00000256188_1+    ENSG00000256188_1+    -                  
 - `--panther` and `--size-filter` are both ignored in this mode (a warning is printed for each).
 - Species QC diagnostics are not run.
 - The output is not intended as CAFE5 input.
+
+---
+
+## Plotting orthology relations (`plot`)
+
+The `plot` subcommand draws the reference-to-query orthology relationships of a
+single gene family as a bipartite graph, using a force-directed layout. It is
+**pairwise**: one reference annotation against one query species.
+
+```
+usage: toga2orthogroups.py plot [-h] -t DIR -q NAME -g LIST -o FILE [options]
+
+required:
+  -t DIR,  --toga-dir DIR          Directory with per-species TOGA2 output subdirs
+  -q NAME, --query-species NAME    Query species to plot against
+  -g LIST, --gene LIST             Seed gene(s): symbol, reference gene ID, or
+                                   family ID (comma-separated)
+  -o FILE, --out FILE              Output figure (.svg, .pdf, .png)
+
+optional:
+  -i FILE, --isoforms FILE         With -b, restricts to the same reference gene
+                                   set the orthogroup builder uses
+  -b FILE, --transcripts-bed FILE  Reference transcript BED file (needed for -bl)
+  -bl LIST|FILE, --blacklist       Chromosomes/scaffolds to exclude
+  -ul,     --include-ul            Include UL (Uncertain Loss) transcripts
+           --labels {ref,all,none} Which nodes to label  (default: ref)
+           --hide-pendants         Hide query genes joined to one reference gene
+           --layout-seed INT       Layout seed; same seed, same figure (default: 1)
+           --spread FLOAT          Force-directed repulsion constant (default: 0.55)
+           --figsize WxH           Figure size in inches (default: 12x9)
+           --dpi INT               Raster resolution (default: 150)
+
+example:
+  toga2orthogroups.py plot \
+    -t TOGA2 \
+    -q mm39 \
+    -g LILRB1 \
+    -o lilr.svg
+```
+
+**What is drawn** — `orthology_classification.tsv` is taken as ground truth.
+Every relationship surviving the loss-status filter becomes one edge:
+
+- **open circle** — reference gene (`t_gene`)
+- **small filled diamond** — query gene, i.e. a locus in the *query* genome (`q_gene`)
+- **edge** — one row of the file: this reference gene's ortholog sits at that query locus
+
+A diamond carrying a single edge is a clean 1:1 assignment. **A diamond carrying
+several edges is one query locus that several reference genes map onto** — and
+that shared locus is what places those reference genes in the same orthogroup.
+
+### Layouts (`--layout`)
+
+| value | nodes | notes |
+|---|---|---|
+| `force` (default) | reference **and** query genes | force-directed; clusters emerge from the topology, but both species share one canvas |
+| `bipartite` | reference **and** query genes | two columns, reference left and query right, ordered to reduce crossings; each species owns a side, so position identifies the species |
+| `projection` | reference genes **only** | two reference genes are joined when they share a query locus |
+
+`projection` gives a single node type, which is the easiest to read, at a cost:
+a query locus shared by *n* reference genes becomes an *n*-clique, so one shared
+locus is no longer distinguishable from several separate ones, and the edge
+count rises. Use `force` or `bipartite` when you need to know *which* locus is
+responsible.
+
+### Reading query gene IDs
+
+Query nodes are labelled with their TOGA ID verbatim. TOGA2 names query loci
+after the reference gene(s) projecting onto them, so a query ID *looks* like a
+reference gene without being one. The ID also encodes how many reference genes
+map to the locus:
+
+| `q_gene` form | reference genes mapping there |
+|---|---|
+| plain name — `ENSG00000104974` | exactly 1 |
+| two comma-joined names | exactly 2 |
+| three comma-joined names | exactly 3 |
+| one name followed by `+` | 4 or more |
+
+So `ENSG00000204577_2+` is a query locus named after `ENSG00000204577`
+(LILRB3), copy 2, with at least four reference genes projecting onto it.
+Reference nodes are labelled with the gene symbol, taken from the `#SYMBOL`
+field of the TOGA transcript name.
+
+The family is the connected component reachable from the seed gene through
+shared query genes, so `-g` needs any one member. Family IDs from
+`orthogroups_map.tsv` are reference gene IDs, so they work as seeds directly.
+
+The figure is deliberately monochrome and unannotated: the layout is the only
+thing that says anything about structure, and nothing is grouped, highlighted or
+colour-coded by the plotter.
+
+`--layout-seed` changes the arrangement without changing the data — useful when
+labels collide. `--hide-pendants` drops query genes attached to a single
+reference gene; they cannot affect how the family is connected, so removing them
+declutters dense graphs without hiding any structural relationship.
+
+### Dependencies
+
+This is the only part of the tool that is not standard-library-only:
+
+```bash
+uv sync --group plot          # or: pip install networkx matplotlib
+```
+
+The imports are deferred and checked before any work is done, so building
+orthogroups still works without them and `plot` exits immediately with an
+install hint if they are missing.
 
 ---
 
