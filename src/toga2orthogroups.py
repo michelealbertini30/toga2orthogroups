@@ -825,7 +825,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "\n"
             "subcommands:\n"
             "  plot   Plot pairwise orthology relationships for one gene family\n"
-            "         (see: toga2orthogroups.py plot -h)\n"
+            "         (see: run_toga2_orthogroups.py plot -h)\n"
         ),
     )
 

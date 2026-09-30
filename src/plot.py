@@ -2,15 +2,16 @@
 """
 plot — draw pairwise orthology relationships for a single gene family.
 
-Renders the (reference_gene - query_gene) relationships of one gene family as a
-bipartite graph with a force-directed layout. Pairwise only: one reference
-annotation against one query species.
+Renders the (reference_gene - query_gene) relationships of one gene family in
+up to three views: bipartite (two columns), projection (force-directed, query
+loci drawn as diamond nodes) and collapsed (reference genes only). Pairwise
+only: one reference annotation against one query species.
 
 The orthology_classification.tsv file is taken as ground truth. Every kept row
 becomes one edge; nothing is inferred, grouped, highlighted or colour-coded.
 
 Usable as:
-    - CLI:     python toga2orthogroups.py plot -t DIR -q SPECIES -g GENE -o FILE
+    - CLI:     run_toga2_orthogroups.py plot -t DIR -q SPECIES -g GENE -o OUTDIR
     - Module:  from src.plot import load_pairwise_edges, family_edges, render
 """
 
@@ -19,6 +20,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import re
 import sys
 from pathlib import Path
 from collections import Counter, defaultdict
@@ -75,6 +77,10 @@ INK         = "#0b0b0b"
 INK_QUERY   = "#52514e"
 
 
+# The three figures the module can draw, in the order they are written.
+LAYOUTS = ("bipartite", "projection", "collapsed")
+
+
 # ---------------------------------------------------------------------------
 # Data containers
 # ---------------------------------------------------------------------------
@@ -88,6 +94,11 @@ class PairwiseOrthology:
     edges: list[tuple[str, str, str]] = field(default_factory=list)
     # ref_gene -> gene symbol, parsed from the reference transcript name
     symbols: dict[str, str] = field(default_factory=dict)
+    # every reference gene in the file, including rows the filters dropped
+    genes: set[str] = field(default_factory=set)
+    # relationships rejected *only* because their projection is UL; empty when
+    # include_ul is set. Used to explain what the default filter left out.
+    ul_edges: list[tuple[str, str, str]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -118,18 +129,29 @@ def load_pairwise_edges(
         intact_statuses.add("UL")
 
     # --- Query transcripts passing the loss filter ---
+    # `ul` collects what the default filter rejects for being UL and nothing
+    # else, so the caller can say what a plain run leaves out. With include_ul
+    # those transcripts land in `intact` and `ul` stays empty.
     intact: set[str] = set()
+    ul: set[str] = set()
     with open(species_dir / "loss_summary.tsv") as fh:
         reader = csv.reader(fh, delimiter="\t")
         next(reader, None)
         for row in reader:
-            if len(row) >= 3 and row[2] in intact_statuses:
+            if len(row) < 3:
+                continue
+            if row[2] in intact_statuses:
                 intact.add(row[1])
+            elif row[2] == "UL":
+                ul.add(row[1])
 
     # --- Orthology relationships ---
     seen: set[tuple[str, str]] = set()
     edges: list[tuple[str, str, str]] = []
     symbols: dict[str, str] = {}
+    genes: set[str] = set()
+    ul_seen: set[tuple[str, str]] = set()
+    ul_edges: list[tuple[str, str, str]] = []
     n_rows = 0
 
     with open(species_dir / "orthology_classification.tsv") as fh:
@@ -141,50 +163,79 @@ def load_pairwise_edges(
             n_rows += 1
             t_gene, t_transcript, q_gene, q_transcript, ortho_class = row[:5]
 
-            # Symbols come from the reference transcript name (ENST...#SYMBOL),
-            # so record them even for rows the filters drop.
+            # Every reference gene in the file is a legal seed, and symbols
+            # come from the reference transcript name (ENST...#SYMBOL), which
+            # is not always present. Record both even for rows the filters drop.
+            genes.add(t_gene)
             if "#" in t_transcript:
                 symbols.setdefault(t_gene, t_transcript.split("#")[1])
 
             if q_gene == "None":
                 continue
-            if q_transcript not in intact:
-                continue
             if reference_genes is not None and t_gene not in reference_genes:
                 continue
 
             # Several transcripts of the same gene pair produce the same edge.
-            if (t_gene, q_gene) in seen:
-                continue
-            seen.add((t_gene, q_gene))
-            edges.append((t_gene, q_gene, ortho_class))
+            if q_transcript in intact:
+                if (t_gene, q_gene) in seen:
+                    continue
+                seen.add((t_gene, q_gene))
+                edges.append((t_gene, q_gene, ortho_class))
+            elif q_transcript in ul:
+                if (t_gene, q_gene) in ul_seen:
+                    continue
+                ul_seen.add((t_gene, q_gene))
+                ul_edges.append((t_gene, q_gene, ortho_class))
+
+    # A pair reachable through an accepted projection is not "UL-only", even
+    # if some other transcript of the same pair was UL.
+    ul_edges = [e for e in ul_edges if (e[0], e[1]) not in seen]
 
     log.debug(
-        "  %s: %d rows, %d distinct gene-level relationships",
-        species, n_rows, len(edges),
+        "  %s: %d rows, %d distinct gene-level relationships (%d UL-only)",
+        species, n_rows, len(edges), len(ul_edges),
     )
-    return PairwiseOrthology(species=species, edges=edges, symbols=symbols)
+    return PairwiseOrthology(
+        species=species, edges=edges, symbols=symbols, genes=genes,
+        ul_edges=ul_edges,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Family selection
 # ---------------------------------------------------------------------------
 
-def resolve_seeds(seeds: list[str], symbols: dict[str, str]) -> set[str]:
-    """Map user-supplied gene IDs or gene symbols onto reference gene IDs."""
+def resolve_seeds(
+    seeds: list[str],
+    symbols: dict[str, str],
+    known_genes: set[str] | None = None,
+) -> set[str]:
+    """Map user-supplied gene IDs or gene symbols onto reference gene IDs.
+
+    A reference gene ID (ENSG00000002586) matches directly, a gene symbol
+    case-insensitively. IDs are checked against every gene in the annotation,
+    not only those whose transcript name carried a symbol.
+    """
+    known = set(symbols) | (known_genes or set())
     by_symbol: dict[str, list[str]] = defaultdict(list)
     for gene, sym in symbols.items():
         by_symbol[sym.upper()].append(gene)
 
     resolved: set[str] = set()
     for seed in seeds:
-        if seed in symbols:
+        if seed in known:
             resolved.add(seed)
         elif seed.upper() in by_symbol:
             resolved.update(by_symbol[seed.upper()])
         else:
             log.warning("Seed not found in reference annotation: %s", seed)
     return resolved
+
+
+def _name(gene: str, symbols: dict[str, str]) -> str:
+    """Gene symbol when the annotation carries one, otherwise the ID."""
+    sym = symbols.get(gene)
+    return f"{sym} ({gene})" if sym else gene
 
 
 def family_edges(
@@ -206,7 +257,10 @@ def family_edges(
     stack = [s for s in seeds if s in ref_to_q]
     for s in seeds:
         if s not in ref_to_q:
-            log.warning("Seed has no orthologs in %s: %s", ortho.species, s)
+            log.warning(
+                "Seed has no orthologs in %s under the current filter: %s",
+                ortho.species, s,
+            )
     keep_ref.update(stack)
     keep_q: set[str] = set()
 
@@ -228,7 +282,7 @@ def family_edges(
 # Rendering
 # ---------------------------------------------------------------------------
 
-def _projection_edges(
+def _collapsed_edges(
     edges: list[tuple[str, str, str]],
 ) -> list[tuple[str, str, set[str]]]:
     """Collapse the bipartite graph onto reference genes only.
@@ -236,7 +290,7 @@ def _projection_edges(
     Two reference genes are joined when they share at least one query locus.
     One shared locus with n reference genes becomes an n-clique, so a single
     shared locus stops being distinguishable from several separate ones —
-    that information survives only in the bipartite views.
+    that information survives only in the bipartite and projection views.
     """
     q_to_refs: dict[str, set[str]] = defaultdict(set)
     for ref, qry, _cls in edges:
@@ -283,8 +337,8 @@ def render(
     edges: list[tuple[str, str, str]],
     symbols: dict[str, str],
     output_path: str | Path,
-    layout: str = "force",
-    labels: str = "ref",
+    layout: str = "projection",
+    labels: str = "all",
     hide_pendants: bool = False,
     layout_seed: int = 1,
     spread: float = 0.55,
@@ -292,22 +346,26 @@ def render(
     figsize: tuple[float, float] = (12.0, 9.0),
     dpi: int = 150,
 ) -> None:
-    """Draw the bipartite orthology graph and write it to output_path.
+    """Draw one view of the orthology graph and write it to output_path.
 
     Reference genes are open circles, query genes small filled diamonds, and
     every kept relationship is one edge. A diamond carrying several edges is
     one query locus that several reference genes map onto. Query nodes are
-    labelled with their TOGA ID verbatim. Output format follows the file
-    suffix (.svg, .pdf, .png).
+    labelled with their TOGA ID verbatim.
+
+    layout is one of LAYOUTS: "bipartite" puts the two species in their own
+    column, "projection" lays the same graph out force-directed, "collapsed"
+    drops the query nodes and joins reference genes sharing a locus. Output
+    format follows the file suffix (.svg, .pdf, .png).
     """
     nx, plt, pe = _load_deps()
 
     graph = nx.Graph()
-    if layout == "projection":
+    if layout == "collapsed":
         # Reference genes only: query loci become edges rather than nodes.
         for ref, _qry, _cls in edges:
             graph.add_node(("R", ref))
-        for a, b, _shared in _projection_edges(edges):
+        for a, b, _shared in _collapsed_edges(edges):
             graph.add_edge(("R", a), ("R", b))
     else:
         for ref, qry, _cls in edges:
@@ -392,7 +450,7 @@ def render(
     fig.savefig(output_path, dpi=dpi, facecolor=SURFACE)
     plt.close(fig)
 
-    if layout == "projection":
+    if layout == "collapsed":
         log.info(
             "Wrote %s (%d reference genes, %d pairs sharing a query locus)",
             output_path, len(ref_nodes), graph.number_of_edges(),
@@ -406,6 +464,47 @@ def render(
 
 
 # ---------------------------------------------------------------------------
+# Output naming
+# ---------------------------------------------------------------------------
+
+_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def parse_layouts(spec: str) -> list[str]:
+    """Expand a --layout value into an ordered list of layout names."""
+    if spec.strip().lower() == "all":
+        return list(LAYOUTS)
+
+    chosen: list[str] = []
+    for item in spec.split(","):
+        item = item.strip().lower()
+        if not item:
+            continue
+        if item not in LAYOUTS:
+            log.error("Unknown layout %r; choose from %s, or 'all'",
+                      item, ", ".join(LAYOUTS))
+            sys.exit(1)
+        if item not in chosen:
+            chosen.append(item)
+
+    if not chosen:
+        log.error("--layout selected nothing")
+        sys.exit(1)
+    # Keep the canonical order whatever order they were given in.
+    return [lay for lay in LAYOUTS if lay in chosen]
+
+
+def output_stem(gene: str) -> str:
+    """Filename stem from the -g value, e.g. ENSG00000002586 or LILRB1.
+
+    Several comma-separated seeds are joined with underscores; anything that
+    does not belong in a filename is replaced.
+    """
+    parts = [_UNSAFE.sub("_", s.strip()) for s in gene.split(",") if s.strip()]
+    return "_".join(parts) or "family"
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -416,16 +515,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 example:
-  toga2orthogroups.py plot \\
+  run_toga2_orthogroups.py plot \\
     -t TOGA2 \\
     -q mm39 \\
-    -g LILRB1 \\
-    -o lilr.svg
+    -g ENSG00000104974 \\
+    -o figures/
+
+  writes figures/ENSG00000104974_bipartite.png
+         figures/ENSG00000104974_projection.png
+         figures/ENSG00000104974_collapsed.png
 
 notes:
-  -g accepts a gene symbol, a reference gene ID, or a family ID from
-  orthogroups_map.tsv (family IDs are reference gene IDs). Several may be
-  given comma-separated; the plot covers every family they fall into.
+  -g accepts a reference gene ID (ENSG00000104974), a gene symbol, or a family
+  ID from orthogroups_map.tsv (family IDs are reference gene IDs). Several may
+  be given comma-separated; the plot covers every family they fall into, and
+  the file names join them with underscores.
 """,
     )
 
@@ -443,8 +547,8 @@ notes:
         help="Seed gene(s): symbol, reference gene ID, or family ID (comma-separated)",
     )
     req.add_argument(
-        "-o", "--out", metavar="FILE", required=True,
-        help="Output figure; format follows the suffix (.svg, .pdf, .png)",
+        "-o", "--out-dir", metavar="DIR", required=True,
+        help="Output directory; files are named <gene>_<layout>.<format>",
     )
 
     opt = app.add_argument_group("optional")
@@ -466,15 +570,16 @@ notes:
         help="Include UL (Uncertain Loss) transcripts",
     )
     opt.add_argument(
-        "--layout", choices=("force", "bipartite", "projection"), default="force",
-        help="force: force-directed, reference and query genes in one graph; "
-             "bipartite: two columns, reference left and query right; "
-             "projection: reference genes only, joined when they share a query "
-             "locus (default: force)",
+        "--layout", metavar="LIST", default="all",
+        help="Comma-separated list of figures to plot: bipartite, projection, collapsed (default: all)",
     )
     opt.add_argument(
-        "--labels", choices=("ref", "all", "none"), default="ref",
-        help="Which nodes to label (default: ref)",
+        "--format", choices=("png", "svg", "pdf"), default="png",
+        help="Output file format (default: png)",
+    )
+    opt.add_argument(
+        "--labels", choices=("all", "ref", "none"), default="all",
+        help="Which nodes to label: all, ref, none (default: all)",
     )
     opt.add_argument(
         "--hide-pendants", action="store_true",
@@ -508,29 +613,41 @@ def run(
     toga_dir: str,
     query_species: str,
     gene: str,
-    out: str,
+    out_dir: str,
     isoforms: str | None = None,
     transcripts_bed: str | None = None,
     blacklist: str | None = None,
     include_ul: bool = False,
-    layout: str = "force",
-    labels: str = "ref",
+    layout: str = "all",
+    fmt: str = "png",
+    labels: str = "all",
     hide_pendants: bool = False,
     layout_seed: int = 1,
     spread: float = 0.55,
     figsize: str = "12x9",
     dpi: int = 150,
 ) -> None:
-    """Core runner — load, select the family, render."""
-    # Fail before doing any work if the plotting packages are absent.
+    """Core runner — load, select the family, render every requested view."""
+    # Fail before doing any work: missing packages, bad flags, unwritable dir.
     _load_deps()
+    layouts = parse_layouts(layout)
+    try:
+        w, h = (float(v) for v in figsize.lower().split("x"))
+    except ValueError:
+        log.error("--figsize must look like WxH, e.g. 12x9")
+        sys.exit(1)
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
 
     log.info("\n=== Plotting orthology relationships ===")
 
     # --- Optional reference gene filtering, matching the orthogroup builder ---
     ref_genes: set[str] | None = None
     if isoforms and transcripts_bed:
-        from src.toga2orthogroups import load_reference_genes, _parse_blacklist
+        try:
+            from src.toga2orthogroups import load_reference_genes, _parse_blacklist
+        except ImportError:
+            from toga2orthogroups import load_reference_genes, _parse_blacklist
         ref_genes = load_reference_genes(
             isoforms, transcripts_bed, blacklist=_parse_blacklist(blacklist),
         ).genes
@@ -546,14 +663,26 @@ def run(
     )
 
     seeds = resolve_seeds([s.strip() for s in gene.split(",") if s.strip()],
-                          ortho.symbols)
+                          ortho.symbols, ortho.genes)
     if not seeds:
         log.error("None of the requested genes were found.")
         sys.exit(1)
 
     edges = family_edges(ortho, seeds)
     if not edges:
-        log.error("The requested gene(s) have no orthologs in %s.", query_species)
+        # Distinguish "nothing in the file" from "everything filtered out".
+        ul_only = sorted(s for s in seeds if any(e[0] == s for e in ortho.ul_edges))
+        if ul_only:
+            log.error(
+                "No orthologs in %s under the default loss filter (FI/I/PI).",
+                query_species,
+            )
+            log.error(
+                "  Every projection of %s is UL (Uncertain Loss). Add -ul to keep them.",
+                ", ".join(_name(g, ortho.symbols) for g in ul_only),
+            )
+        else:
+            log.error("The requested gene(s) have no orthologs in %s.", query_species)
         sys.exit(1)
 
     members = sorted({e[0] for e in edges}, key=lambda g: ortho.symbols.get(g, g))
@@ -563,20 +692,36 @@ def run(
         len(members), len({e[1] for e in edges}), len(edges),
     )
     log.info("  %s", ", ".join(f"{k}={v}" for k, v in sorted(classes.items())))
-    log.info("  %s", ", ".join(ortho.symbols.get(g, g) for g in members))
+    log.info("  %s", ", ".join(_name(g, ortho.symbols) for g in members))
 
-    try:
-        w, h = (float(v) for v in figsize.lower().split("x"))
-    except ValueError:
-        log.error("--figsize must look like WxH, e.g. 12x9")
-        sys.exit(1)
+    # The loss filter can hold genes out of a family that is otherwise intact,
+    # which looks like a missing gene rather than a filtered one. Say so.
+    if ortho.ul_edges:
+        wider = family_edges(
+            PairwiseOrthology(
+                species=ortho.species,
+                edges=ortho.edges + ortho.ul_edges,
+                symbols=ortho.symbols,
+                genes=ortho.genes,
+            ),
+            seeds,
+        )
+        extra = sorted({e[0] for e in wider} - set(members),
+                       key=lambda g: _name(g, ortho.symbols))
+        if extra:
+            log.info(
+                "  note: %d more reference gene(s) join this family with -ul: %s",
+                len(extra), ", ".join(_name(g, ortho.symbols) for g in extra),
+            )
 
-    render(
-        edges, ortho.symbols, out,
-        layout=layout,
-        labels=labels, hide_pendants=hide_pendants, layout_seed=layout_seed,
-        spread=spread, figsize=(w, h), dpi=dpi,
-    )
+    stem = output_stem(gene)
+    for lay in layouts:
+        render(
+            edges, ortho.symbols, out_path / f"{stem}_{lay}.{fmt}",
+            layout=lay,
+            labels=labels, hide_pendants=hide_pendants, layout_seed=layout_seed,
+            spread=spread, figsize=(w, h), dpi=dpi,
+        )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -589,12 +734,13 @@ def main(argv: list[str] | None = None) -> None:
         toga_dir=args.toga_dir,
         query_species=args.query_species,
         gene=args.gene,
-        out=args.out,
+        out_dir=args.out_dir,
         isoforms=args.isoforms,
         transcripts_bed=args.transcripts_bed,
         blacklist=args.blacklist,
         include_ul=args.include_ul,
         layout=args.layout,
+        fmt=args.format,
         labels=args.labels,
         hide_pendants=args.hide_pendants,
         layout_seed=args.layout_seed,
